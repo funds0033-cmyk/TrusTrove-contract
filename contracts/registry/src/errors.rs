@@ -22,4 +22,6 @@ pub enum RegistryError {
     /// The `caller` passed to `verify_profile` is neither the stored admin
     /// nor the stored verifier (#732).
     Unauthorized = 9,
+    /// A profile counter overflow occurred during registration.
+    MathOverflow = 10,
 }

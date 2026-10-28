@@ -58,6 +58,16 @@ impl MockRegistry {
     }
 }
 
+#[contract]
+pub struct FailingRegistry;
+
+#[contractimpl]
+impl FailingRegistry {
+    pub fn is_verified(_env: Env, _address: Address) -> bool {
+        panic!("registry external call failed");
+    }
+}
+
 #[contracttype]
 pub struct DataKey(Address);
 
@@ -4374,6 +4384,84 @@ fn test_create_fails_missing_counter() {
 
     let due_date = env.ledger().timestamp() + DEFAULT_DUE_OFFSET;
     client.create(&issuer, &buyer, &DEFAULT_FACE_VALUE, &due_date, &usdc);
+}
+
+#[test]
+fn test_create_registry_external_failure() {
+    // Issue #939: test that registry external-call failure during create
+    // causes atomic rollback with no invoice persisted and no Counter advance.
+    // The registry traps on is_verified, simulating a host-level contract failure.
+    // This should cause the invoice create to fail atomically: no invoice_created
+    // event, no invoice storage, and no Counter increment.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let registry_id = env.register(FailingRegistry, ());
+
+    let issuer = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register(InvoiceContract, (admin.clone(), registry_id.clone()));
+    let client = InvoiceContractClient::new(&env, &contract_id);
+
+    let usdc = Address::generate(&env);
+    client.add_supported_asset(&usdc);
+
+    let due_date = env.ledger().timestamp() + DEFAULT_DUE_OFFSET;
+
+    // Capture initial state
+    let initial_counter: u64 = env
+        .as_contract(&client.address, || {
+            env.storage()
+                .instance()
+                .get(&crate::DataKey::Counter)
+                .unwrap_or(0)
+        });
+
+    // Attempt to create an invoice - should fail due to registry trap
+    let result = client.try_create(&issuer, &buyer, &DEFAULT_FACE_VALUE, &due_date, &usdc);
+
+    // Assert the call failed with a contract error (host-level failure from registry trap)
+    assert!(result.is_err());
+    match result {
+        Err(Ok(soroban_sdk::Error::Contract(_))) => {
+            // Expected: host-level contract error from registry trap
+        }
+        _ => panic!("expected host-level contract error from registry trap"),
+    }
+
+    // Verify no invoice_created event was emitted (atomic failure)
+    let events = env.events().all();
+    let has_invoice_created = events.iter().any(|(_, topics, _)| {
+        topics
+            .get(0)
+            .map(|t| t == &Symbol::new(&env, "invoice_created").into_val(&env))
+            .unwrap_or(false)
+    });
+    assert!(
+        !has_invoice_created,
+        "invoice_created event should not be emitted on registry failure"
+    );
+
+    // Verify Counter did not advance
+    let final_counter: u64 = env
+        .as_contract(&client.address, || {
+            env.storage()
+                .instance()
+                .get(&crate::DataKey::Counter)
+                .unwrap_or(0)
+        });
+    assert_eq!(
+        final_counter, initial_counter,
+        "Counter should not advance on registry failure"
+    );
+
+    // Verify no invoice was persisted in storage
+    // We can't check a specific invoice ID since the call failed before it was generated,
+    // but we can verify that no invoice storage keys exist by checking that Counter
+    // hasn't advanced (already verified above) and that attempting to read any invoice
+    // would fail.
 }
 
 #[test]

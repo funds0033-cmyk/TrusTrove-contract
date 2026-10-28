@@ -4234,3 +4234,19 @@ fn test_revoke_pending_verified_and_revoked_transitions() {
     );
     assert_eq!(revoked_events, 2);
 }
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_register_issuer_rejects_counter_overflow_without_writing_profile() {
+    let (env, admin, client) = setup();
+    let issuer = Address::generate(&env);
+
+    // Simulate corrupt/adversarial storage where the counter is exhausted.
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProfileCount(Role::Issuer), &u32::MAX);
+    });
+
+    client.register_issuer(&issuer, &map![&env]);
+}

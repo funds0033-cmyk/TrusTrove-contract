@@ -1202,12 +1202,15 @@ impl RegistryContract {
             .persistent()
             .extend_ttl(&index_key, TTL_THRESHOLD, TTL_EXTEND_TO);
 
-        // `saturating_add` rather than `+ 1`: a count this large is not
-        // reachable, and saturating keeps the write from panicking in a
-        // release build with overflow checks on.
+        // Use `checked_add` to detect overflow and fail with a typed error
+        // rather than silently saturating. This matches the pattern used in
+        // the invoice contract for SupportedAssetCount.
+        let next_count = count
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(env, RegistryError::MathOverflow));
         env.storage()
             .persistent()
-            .set(&count_key, &count.saturating_add(1));
+            .set(&count_key, &next_count);
         env.storage()
             .persistent()
             .extend_ttl(&count_key, TTL_THRESHOLD, TTL_EXTEND_TO);
